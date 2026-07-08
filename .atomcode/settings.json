@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "glob": ["**/*.db", "**/*.sqlite"],
+        "blocked": true,
+        "message": "⚠️ 数据库文件不允许直接编辑，请使用 Repository 层或迁移脚本操作。"
+      },
+      {
+        "glob": ["**/appsettings*.json", "**/appsettings*.Development.json"],
+        "blocked": true,
+        "message": "⚠️ 配置文件包含连接字符串，请通过配置系统修改，不要直接编辑文件。"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "glob": "**/*.cs",
+        "commands": ["dotnet format --verify-no-changes"],
+        "description": "编辑 C# 文件后自动检查代码格式"
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Read",
+      "Bash(dotnet *)",
+      "Bash(git *)"
+    ]
+  }
+}
