@@ -208,7 +208,7 @@ public class TuiService
             Console.WriteLine(new string(' ', w));
 
         // 底部帮助栏
-        var help = " ↑↓移动 Space选中 A全选 Shift+↑↓区间 D删除 Enter预览 S搜索 F筛选 T类型 R排序 B备份 V收缩 Esc清选";
+        var help = " ↑↓移动 Space选中 A全选 Shift+↑↓区间 D删除 Enter恢复会话 P预览 S搜索 F筛选 T类型 R排序 B备份 V收缩 Esc清选";
         WriteLineColor(help[..Math.Min(help.Length, w)], ConsoleColor.DarkGray);
     }
 
@@ -239,6 +239,9 @@ public class TuiService
                 ToggleSelectAll();
                 break;
             case ConsoleKey.Enter:
+                ResumeSession();
+                break;
+            case ConsoleKey.P when key.Modifiers == 0:
                 PreviewSession();
                 break;
             case ConsoleKey.D when key.Modifiers == 0:
@@ -343,7 +346,52 @@ public class TuiService
     private void SetStatus(string msg) { _statusMessage = msg; _statusMessageTime = DateTime.Now; }
 
     // ══════════════════════════════════════════════
-    //  预览
+    //  运行/恢复会话
+    // ══════════════════════════════════════════════
+
+    private void ResumeSession()
+    {
+        if (_cursorIndex >= _sessions.Count) return;
+        var s = _sessions[_cursorIndex];
+
+        Console.Clear();
+        WriteLineColor($"🚀 正在启动会话...", ConsoleColor.Yellow);
+        Console.WriteLine($"  ID:    {s.Id}");
+        Console.WriteLine($"  标题:  {s.Title}");
+        Console.WriteLine($"  项目:  {s.ProjectPath}");
+        Console.WriteLine();
+
+        var projectDir = string.IsNullOrEmpty(s.ProjectPath) ? "." : s.ProjectPath;
+        if (!Directory.Exists(projectDir))
+        {
+            WriteLineColor($"  项目目录不存在: {projectDir}", ConsoleColor.Red);
+            Console.WriteLine("  将使用当前目录启动");
+            projectDir = ".";
+        }
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "opencode",
+                Arguments = $"-s {s.Id}",
+                WorkingDirectory = projectDir,
+                UseShellExecute = true,
+            };
+            System.Diagnostics.Process.Start(psi);
+            WriteLineColor($"  ✅ opencode -s {s.Id} 已启动", ConsoleColor.Green);
+        }
+        catch (Exception ex)
+        {
+            WriteLineColor($"  启动失败: {ex.Message}", ConsoleColor.Red);
+            Console.WriteLine("  请确保 opencode 已安装并在 PATH 中");
+        }
+
+        PromptAnyKey();
+    }
+
+    // ══════════════════════════════════════════════
+    //  预览会话
     // ══════════════════════════════════════════════
 
     private void PreviewSession()
@@ -618,7 +666,8 @@ public class TuiService
   Space      切换当前行选中
   A          全选/取消全选
   Shift+↑/↓  区间选中
-  Enter      预览会话
+  Enter      恢复/运行会话（调用 opencode）
+  P          预览会话内容
   D          删除选中
   S          搜索
   F          筛选(时间/项目/类型)
