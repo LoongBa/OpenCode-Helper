@@ -10,7 +10,7 @@ public static class LogService
     static LogService()
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        LogDir = Path.Combine(appData, "OpenCodeSessionManager", "logs");
+        LogDir = Path.Combine(appData, "OpenCode-Helper", "logs");
         LogFilePath = Path.Combine(LogDir, $"opencode_{DateTime.Now:yyyyMM}.log");
 
         try

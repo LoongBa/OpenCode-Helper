@@ -21,7 +21,7 @@
 
 ### 1.1 定位
 
-终端 TUI 工具，用于浏览、搜索、批量管理 OpenCode 会话历史。参考 [opencode-history](https://github.com/felix-lj-ct/opencode-history) (oh) Web Dashboard 的设计理念，在 TUI 终端中实现会话管理，并**额外提供 oh 不具备的删除、批量删除、会话类型过滤、备份、数据库收缩等管理能力**。
+终端 TUI 工具，用于浏览、搜索、批量管理 OpenCode 会话历史。参考 [opencode-history](https://github.com/felix-lj-ct/opencode-history) (oh) Web Dashboard 的设计理念，在 TUI 终端中管理会话，并**额外提供 oh 不具备的删除、批量删除、会话类型过滤、备份、数据库收缩等能力**。
 
 ### 1.2 核心差异化
 
@@ -204,7 +204,7 @@ oh (Web Dashboard)               本工具 (TUI)
 
 | ID   | 需求   | 说明                                                               |
 | ---- | ---- | ---------------------------------------------------------------- |
-| F801 | 日志路径 | `%LOCALAPPDATA%\OpenCodeSessionManager\logs\opencode_yyyyMM.log` |
+| F801 | 日志路径 | `%LOCALAPPDATA%\OpenCode-Helper\logs\opencode_yyyyMM.log` |
 | F802 | 日志级别 | INFO / WARN / ERROR                                              |
 | F803 | 记录内容 | 备份操作、删除操作（含会话 ID）、VACUUM 结果                                      |
 
@@ -250,7 +250,7 @@ Main(args)
 
 | 需求     | 说明                                         |
 | ------ | ------------------------------------------ |
-| 单文件发布  | Native AOT，输出 `OpenCodeSessionManager.exe` |
+| 单文件发布  | Native AOT，输出 `OpenCode-Helper.exe` |
 | 无运行时依赖 | 无需安装 .NET Runtime                          |
 | 启动速度   | 毫秒级                                        |
 | 文件体积   | 约 5-8 MB                                   |
@@ -312,13 +312,13 @@ Main(args)
 
 ```bash
 # 清理 30 天前的所有会话（含自动备份）
-OpenCodeSessionManager.exe --purge-before 2026-06-08
+OpenCode-Helper.exe --purge-before 2026-06-08
 
 # 仅做备份
-OpenCodeSessionManager.exe --backup-only
+OpenCode-Helper.exe --backup-only
 
 # 收缩数据库
-OpenCodeSessionManager.exe --vacuum
+OpenCode-Helper.exe --vacuum
 ```
 
 ### 6.3 键盘快捷键总表

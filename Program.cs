@@ -2,7 +2,6 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Reflection;
 using OpenCodeHelper.Services;
-using Spectre.Console;
 
 namespace OpenCodeHelper;
 
@@ -10,7 +9,7 @@ namespace OpenCodeHelper;
 public static partial class Program
 {
     private const string AppName = "OpenCode 助手";
-    private const string GitHubUrl = "https://github.com/[username]/OpenCode-Helper";
+    private const string GitHubUrl = "https://github.com/LoongBa/OpenCode-Helper";
 
     private static readonly string AppVersion =
         Assembly.GetEntryAssembly()?.GetName()?.Version?.ToString() ?? "0.8.0.0";
@@ -61,8 +60,10 @@ public static partial class Program
         Console.WriteLine($"  {GitHubUrl}");
         Console.WriteLine($"  {Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyDescriptionAttribute>()?.Description}");
         Console.WriteLine();
-        AnsiConsole.MarkupLine("  [green]提示[/]: 使用 [yellow]--help[/] 查看所有命令行选项");
-        AnsiConsole.MarkupLine("  [green]直接启动[/]: 进入交互式 TUI 管理模式");
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine("  提示: 使用 --help 查看所有命令行选项");
+        Console.WriteLine("  直接启动: 进入交互式 TUI 管理模式");
+        Console.ResetColor();
         Console.WriteLine(new string('─', 60));
         Console.WriteLine();
     }
