@@ -3,7 +3,144 @@ using OpenCodeHelper.Services;
 
 namespace OpenCodeHelper.Services;
 
-/// <summary>终端 UI 服务 — 纯 System.Console 实现</summary>
+// ══════════════════════════════════════════════════════════════
+//  屏幕缓冲区 — 支持脏区域追踪和增量渲染
+// ══════════════════════════════════════════════════════════════
+
+internal class ScreenBuffer
+{
+    private char[][] _chars = Array.Empty<char[]>();
+    private ConsoleColor?[][] _fgs = Array.Empty<ConsoleColor?[]>();
+    private ConsoleColor?[][] _bgs = Array.Empty<ConsoleColor?[]>();
+    private int _width, _height;
+
+    public ScreenBuffer(int w = 80, int h = 25) => Resize(w, h);
+
+    public void Resize(int w, int h)
+    {
+        _width = w; _height = h;
+        _chars = new char[h][];
+        _fgs = new ConsoleColor?[h][];
+        _bgs = new ConsoleColor?[h][];
+        for (int y = 0; y < h; y++)
+        {
+            _chars[y] = new char[w];
+            _fgs[y] = new ConsoleColor?[w];
+            _bgs[y] = new ConsoleColor?[w];
+            Array.Fill(_chars[y], ' ');
+        }
+    }
+
+    public void Set(int x, int y, char c, ConsoleColor? fg = null, ConsoleColor? bg = null)
+    {
+        if (x < 0 || x >= _width || y < 0 || y >= _height) return;
+        _chars[y][x] = c;
+        _fgs[y][x] = fg;
+        _bgs[y][x] = bg;
+    }
+
+    public void Write(int x, int y, string text, ConsoleColor? fg = null, ConsoleColor? bg = null)
+    {
+        for (int i = 0; i < text.Length && x + i < _width; i++)
+            Set(x + i, y, text[i], fg, bg);
+    }
+
+    /// <summary>将缓冲区差异渲染到终端</summary>
+    public void Flush(ScreenBuffer? previous = null)
+    {
+        bool first = previous is null;
+        for (int y = 0; y < _height; y++)
+        {
+            bool lineDirty = first;
+            if (!lineDirty)
+                for (int x = 0; x < _width; x++)
+                    if (_chars[y][x] != previous!._chars[y][x] ||
+                        _fgs[y][x] != previous!._fgs[y][x] ||
+                        _bgs[y][x] != previous!._bgs[y][x]) { lineDirty = true; break; }
+
+            if (!lineDirty) continue;
+
+            Console.SetCursorPosition(0, y);
+            for (int x = 0; x < _width; x++)
+            {
+                var fg = _fgs[y][x]; var bg = _bgs[y][x];
+                if (fg.HasValue) Console.ForegroundColor = fg.Value;
+                if (bg.HasValue) Console.BackgroundColor = bg.Value;
+                Console.Write(_chars[y][x]);
+                Console.ResetColor();
+            }
+        }
+    }
+
+    public void Clear()
+    {
+        for (int y = 0; y < _height; y++)
+        {
+            Array.Fill(_chars[y], ' ');
+            Array.Fill(_fgs[y], (ConsoleColor?)null);
+            Array.Fill(_bgs[y], (ConsoleColor?)null);
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  对话框组件
+// ══════════════════════════════════════════════════════════════
+
+internal class Dialog
+{
+    public string Title { get; set; } = "";
+    public List<string> Lines { get; } = new();
+    public List<(string key, string label)> Options { get; } = new();
+
+    public void Render(ScreenBuffer buf, int screenW, int screenH)
+    {
+        int dlgW = Math.Min(72, screenW - 4);
+        int dlgH = Math.Min(Lines.Count + 5 + Options.Count, screenH - 4);
+        int left = (screenW - dlgW) / 2;
+        int top = Math.Max(2, (screenH - dlgH) / 2 - 2);
+
+        // 半透明覆盖
+        for (int y = top - 1; y < top + dlgH + 1 && y < screenH; y++)
+            for (int x = left - 1; x < left + dlgW + 1 && x < screenW; x++)
+                buf.Set(x, y, ' ', null, ConsoleColor.DarkGray);
+
+        var line = new string('═', dlgW - 2);
+
+        // 标题栏
+        buf.Write(left, top, $"╔{line}╗", ConsoleColor.White, ConsoleColor.DarkBlue);
+        buf.Write(left, top + 1, $"║ {Title.PadRight(dlgW - 3)}║", ConsoleColor.Yellow, ConsoleColor.DarkBlue);
+        buf.Write(left, top + 2, $"╠{line}╣", ConsoleColor.White, ConsoleColor.DarkBlue);
+
+        // 内容
+        int row = 3;
+        foreach (var l in Lines)
+        {
+            var text = l.Length > dlgW - 4 ? l[..(dlgW - 7)] + "..." : l;
+            buf.Write(left, top + row, $"  {text.PadRight(dlgW - 4)}");
+            row++;
+        }
+
+        // 底部分隔线
+        buf.Write(left, top + row, $"╠{line}╣", ConsoleColor.White, ConsoleColor.DarkBlue);
+        row++;
+
+        // 选项按钮
+        foreach (var (key, label) in Options)
+        {
+            buf.Write(left, top + row, $"  [{key}] {label}".PadRight(dlgW), ConsoleColor.Green);
+            row++;
+        }
+
+        // 底部边框
+        buf.Write(left, top + row, $"╚{line}╝", ConsoleColor.White, ConsoleColor.DarkBlue);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  主 TUI 服务
+// ══════════════════════════════════════════════════════════════
+
 public class TuiService
 {
     private readonly DatabaseService _dbService;
@@ -37,6 +174,11 @@ public class TuiService
     private DateTime _statusMessageTime;
     private int _totalFilteredCount;
 
+    // — 屏幕 —
+    private ScreenBuffer _screen = new();
+    private ScreenBuffer _prev = new();
+    private int _width, _height;
+
     public TuiService(DatabaseService dbService, BackupService backupService, AppConfig config)
     {
         _dbService = dbService;
@@ -46,48 +188,166 @@ public class TuiService
         _sessionType = DefaultSessionType;
     }
 
-    // ══════════════════════════════════════════════
-    //  主循环
-    // ══════════════════════════════════════════════
-
     public void Run()
     {
-        Console.CursorVisible = false;
+        try { Console.CursorVisible = false; } catch { }
 
-        // 校验 + 连接
-        var (valid, err) = _dbService.ValidateDatabase();
-        if (!valid)
-        {
-            WriteError($"数据库错误: {err}");
-            PromptAnyKey();
-            return;
-        }
-        if (!_dbService.Open())
-        {
-            WriteError("无法打开数据库连接");
-            PromptAnyKey();
-            return;
-        }
-
-        ShowLoading("正在加载数据...", () =>
+        ShowLoading("正在搜索数据库...", () =>
         {
             _projectPaths = _dbService.GetProjectPaths();
             _availableTypes = _dbService.GetSessionTypes();
             LoadData();
         });
 
+        // 初始渲染
+        GetScreenSize();
+        MainRender();
+
         while (_running)
         {
-            Render();
+            try { Console.CursorVisible = false; } catch { }
+            MainRender();
             HandleInput();
         }
 
-        Console.CursorVisible = true;
+        try { Console.CursorVisible = true; } catch { }
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
+    //  屏幕尺寸
+    // ═════════════════════════════════════════════════
+
+    private void GetScreenSize()
+    {
+        try { _width = Console.WindowWidth; _height = Console.WindowHeight; }
+        catch { _width = 80; _height = 25; }
+    }
+
+    // ═════════════════════════════════════════════════
+    //  主渲染
+    // ═════════════════════════════════════════════════
+
+    private void MainRender()
+    {
+        GetScreenSize();
+        _screen.Resize(_width, _height);
+        _screen.Clear();
+
+        var typeLabel = _sessionType ?? "全部";
+        var sortIcon = _sortAscending ? "↑" : "↓";
+
+        // 状态栏（蓝底白字）
+        var status = $" OpenCode 助手  [{_selectedIds.Count}选中/{_totalFilteredCount}总]  类型:{typeLabel}  排序:{sortIcon}时间  [F1]帮助 [Q]退出 ";
+        _screen.Write(0, 0, status.PadRight(_width), ConsoleColor.White, ConsoleColor.DarkBlue);
+
+        // 筛选栏
+        var filter = $" 🔍{(string.IsNullOrEmpty(_searchKeyword) ? "无" : _searchKeyword)}";
+        filter += $"  ⏱{(_timeFilter == "all" ? "全部" : _timeFilter == "month" ? "近1月" : "近6月")}";
+        if (_projectFilter is not null)
+            filter += $"  📁{Path.GetFileName(_projectFilter)}";
+        _screen.Write(0, 1, filter.PadRight(_width), ConsoleColor.Cyan);
+
+        // 状态消息（3秒自动消失）
+        if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.Now - _statusMessageTime).TotalSeconds < 3)
+            _screen.Write(0, 2, $" ⚡{_statusMessage}".PadRight(_width), ConsoleColor.Yellow);
+
+        // 分割线
+        _screen.Write(0, 3, new string('─', _width), ConsoleColor.DarkGray);
+
+        // 会话列表
+        int row = 4;
+        if (_sessions.Count == 0)
+        {
+            _screen.Write(2, row, "暂无匹配会话，按 F 调整筛选  |  按 T 切换类型  |  按 S 搜索", ConsoleColor.DarkGray);
+        }
+        else
+        {
+            foreach (var (label, start, count) in _dateGroups)
+            {
+                // 日期分组标题（黄色高亮）
+                _screen.Write(0, row, $" ── {label} ({count}条) ──".PadRight(_width), ConsoleColor.DarkYellow);
+                row++;
+
+                for (int i = start; i < start + count && row < _height - 2; i++)
+                {
+                    var s = _sessions[i];
+                    var sel = _selectedIds.Contains(s.Id);
+                    var cur = i == _cursorIndex;
+                    var main = s.IsMainSession;
+
+                    // 背景色（光标行）
+                    var bg = cur ? ConsoleColor.DarkGray : (ConsoleColor?)null;
+
+                    // 第一行：复选框 + 类型图标 + 标题
+                    var cb = sel ? " [*]" : " [ ]";
+                    var icon = main ? "●" : "○";
+                    var title = s.Title;
+                    if (title.Length > _width - 12) title = title[..(_width - 15)] + "...";
+                    var line1 = $"{cb} {icon} {title}";
+                    var fg = sel && !cur ? ConsoleColor.Yellow : (ConsoleColor?)null;
+                    _screen.Write(0, row, line1.PadRight(_width), fg, bg);
+                    row++;
+
+                    // 第二行：项目路径 + 时间 + 消息数（缩进+灰色）
+                    var proj = string.IsNullOrEmpty(s.ProjectPath) ? "(全局)" : s.ProjectPath;
+                    if (proj.Length > 50) proj = "..." + proj[^47..];
+                    var meta = $"    {proj,-50} {s.FormattedTime}  {s.MessageCount}条消息";
+                    _screen.Write(0, row, meta[..Math.Min(meta.Length, _width)].PadRight(_width), ConsoleColor.DarkGray, cur ? ConsoleColor.DarkGray : null);
+                    row++;
+                }
+            }
+        }
+
+        // 填充空白行
+        while (row < _height - 1)
+        {
+            _screen.Write(0, row, new string(' ', _width));
+            row++;
+        }
+
+        // 底部操作栏（灰色）
+        var help = " ↑↓移动  Space选中  A全选  D删除  Enter恢复  P预览  S搜索  F筛选  T类型  R排序  B备份  V收缩  Esc清选  F1帮助";
+        _screen.Write(0, _height - 1, help[..Math.Min(help.Length, _width)].PadRight(_width), ConsoleColor.DarkGray);
+
+        // 刷新到终端
+        _screen.Flush(_prev);
+        (_prev, _screen) = (_screen, _prev);
+    }
+
+    // ═════════════════════════════════════════════════
+    //  模态对话框
+    // ═════════════════════════════════════════════════
+
+    private string ShowDialog(Dialog dlg)
+    {
+        GetScreenSize();
+        _screen.Resize(_width, _height);
+        _screen.Clear();
+
+        // 复制主画面做背景
+        foreach (var (label, start, count) in _dateGroups)
+        {
+            _screen.Write(0, start + 4, new string(' ', _width));
+        }
+
+        dlg.Render(_screen, _width, _height);
+        _screen.Flush(null);
+
+        while (true)
+        {
+            var key = Console.ReadKey(true);
+            foreach (var (k, _) in dlg.Options)
+            {
+                if (key.KeyChar == k[0] || key.Key == char.ToUpper(k[0]) - 'A' + ConsoleKey.A)
+                    return k;
+            }
+            if (key.Key == ConsoleKey.Escape) return "";
+        }
+    }
+
+    // ═════════════════════════════════════════════════
     //  数据加载
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void LoadData()
     {
@@ -100,12 +360,12 @@ public class TuiService
 
         _totalFilteredCount = _dbService.GetFilteredCount(
             string.IsNullOrWhiteSpace(_searchKeyword) ? null : _searchKeyword,
-            beforeDate, _projectFilter, _sessionType);
+            beforeDate, _projectFilter, _sessionType, excludeSubAgents: true);
 
         _sessions = _dbService.GetSessions(
             _page * PageSize, PageSize,
             string.IsNullOrWhiteSpace(_searchKeyword) ? null : _searchKeyword,
-            beforeDate, _projectFilter, _sessionType);
+            beforeDate, _projectFilter, _sessionType, excludeSubAgents: true);
 
         BuildDateGroups();
     }
@@ -113,185 +373,65 @@ public class TuiService
     private void BuildDateGroups()
     {
         _dateGroups.Clear();
-        string? current = null;
+        string? cur = null;
         int start = 0;
         for (int i = 0; i < _sessions.Count; i++)
         {
-            var label = _sessions[i].DateGroup;
-            if (label != current)
+            var lbl = _sessions[i].DateGroup;
+            if (lbl != cur)
             {
-                if (current is not null)
-                    _dateGroups.Add((current, start, i - start));
-                current = label;
-                start = i;
+                if (cur is not null) _dateGroups.Add((cur, start, i - start));
+                cur = lbl; start = i;
             }
         }
-        if (current is not null)
-            _dateGroups.Add((current, start, _sessions.Count - start));
+        if (cur is not null) _dateGroups.Add((cur, start, _sessions.Count - start));
     }
 
-    // ══════════════════════════════════════════════
-    //  渲染
-    // ══════════════════════════════════════════════
-
-    private void Render()
-    {
-        Console.SetCursorPosition(0, 0);
-        var w = Console.WindowWidth;
-        var h = Console.WindowHeight;
-
-        // 状态栏
-        var typeLabel = _sessionType ?? "全部";
-        var sortIcon = _sortAscending ? "↑" : "↓";
-        var status = $" OpenCode 助手 [{_selectedIds.Count}选中/{_totalFilteredCount}总] 类型:{typeLabel} 排序:{sortIcon}时间  F1帮助 Q退出 ";
-        WriteColor(status.PadRight(w), ConsoleColor.White, ConsoleColor.DarkBlue);
-        Console.WriteLine();
-
-        // 筛选栏
-        var filter = $" 搜索:[{(string.IsNullOrEmpty(_searchKeyword) ? "无" : _searchKeyword)}]";
-        filter += $" 时间:[{(_timeFilter == "all" ? "全部" : _timeFilter == "month" ? "近1月" : "近6月")}]";
-        if (_projectFilter is not null)
-            filter += $" 项目:[{Path.GetFileName(_projectFilter)}]";
-        WriteLineColor(filter.PadRight(w), ConsoleColor.Cyan);
-        Console.ResetColor();
-
-        // 状态消息
-        if (!string.IsNullOrEmpty(_statusMessage) && (DateTime.Now - _statusMessageTime).TotalSeconds < 5)
-            WriteLineColor($" > {_statusMessage}".PadRight(w), ConsoleColor.Yellow);
-        else
-            Console.WriteLine();
-
-        // 会话列表
-        int rows = 4;
-        if (_sessions.Count == 0)
-        {
-            WriteLineColor(" (无匹配会话)".PadRight(w), ConsoleColor.DarkGray);
-            rows++;
-        }
-        else
-        {
-            foreach (var (label, start, count) in _dateGroups)
-            {
-                WriteLineColor($" ── {label} ({count}条) ──".PadRight(w), ConsoleColor.DarkYellow);
-                rows++;
-
-                for (int i = start; i < start + count; i++)
-                {
-                    var s = _sessions[i];
-                    var sel = _selectedIds.Contains(s.Id);
-                    var cur = i == _cursorIndex;
-                    var main = s.IsMainSession;
-
-                    if (cur) Console.BackgroundColor = ConsoleColor.DarkGray;
-
-                    var cb = sel ? "[*]" : "[ ]";
-                    var icon = main ? "●" : "○";
-                    var title = s.Title.Length > w - 10 ? s.Title[..(w - 13)] + "..." : s.Title;
-                    var line1 = $" {cb} {icon} {title}";
-                    if (sel && !cur) Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine(line1[..Math.Min(line1.Length, w)]);
-                    Console.ResetColor();
-                    if (cur) Console.BackgroundColor = ConsoleColor.DarkGray;
-
-                    var proj = string.IsNullOrEmpty(s.ProjectPath) ? "(全局)" : s.ProjectPath;
-                    if (proj.Length > 50) proj = "..." + proj[^47..];
-                    var meta = $"    {proj,-50} {s.FormattedTime}  {s.MessageCount}条";
-                    WriteLineColor(meta[..Math.Min(meta.Length, w)], ConsoleColor.DarkGray);
-
-                    rows += 2;
-                }
-            }
-        }
-
-        // 填充剩余行
-        for (int r = rows; r < h - 2 && Console.CursorTop < h - 2; r++)
-            Console.WriteLine(new string(' ', w));
-
-        // 底部帮助栏
-        var help = " ↑↓移动 Space选中 A全选 Shift+↑↓区间 D删除 Enter恢复会话 P预览 S搜索 F筛选 T类型 R排序 B备份 V收缩 Esc清选";
-        WriteLineColor(help[..Math.Min(help.Length, w)], ConsoleColor.DarkGray);
-    }
-
-    // ══════════════════════════════════════════════
-    //  键盘输入
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
+    //  输入处理
+    // ═════════════════════════════════════════════════
 
     private void HandleInput()
     {
-        var key = Console.ReadKey(true);
-
-        switch (key.Key)
+        try
         {
-            case ConsoleKey.UpArrow:
-                if (key.Modifiers.HasFlag(ConsoleModifiers.Shift) && _cursorIndex > 0)
-                    SelectRange(_cursorIndex, _cursorIndex - 1);
-                if (_cursorIndex > 0) _cursorIndex--;
-                break;
-            case ConsoleKey.DownArrow:
-                if (key.Modifiers.HasFlag(ConsoleModifiers.Shift))
-                    SelectRange(_cursorIndex, _cursorIndex + 1);
-                if (_cursorIndex < _sessions.Count - 1) _cursorIndex++;
-                break;
-            case ConsoleKey.Spacebar:
-                ToggleCurrentSelection();
-                break;
-            case ConsoleKey.A when key.Modifiers == 0:
-                ToggleSelectAll();
-                break;
-            case ConsoleKey.Enter:
-                ResumeSession();
-                break;
-            case ConsoleKey.P when key.Modifiers == 0:
-                PreviewSession();
-                break;
-            case ConsoleKey.D when key.Modifiers == 0:
-                DeleteSelectedSessions();
-                break;
-            case ConsoleKey.S when key.Modifiers == 0:
-                ShowSearchDialog();
-                break;
-            case ConsoleKey.F when key.Modifiers == 0:
-                ShowFilterDialog();
-                break;
-            case ConsoleKey.T when key.Modifiers == 0:
-                ToggleSessionType();
-                break;
-            case ConsoleKey.R when key.Modifiers == 0:
-                ToggleSortOrder();
-                break;
-            case ConsoleKey.B when key.Modifiers == 0:
-                ShowBackupMenu();
-                break;
-            case ConsoleKey.V when key.Modifiers == 0:
-                ShowVacuumDialog();
-                break;
-            case ConsoleKey.F1:
-                ShowHelpDialog();
-                break;
-            case ConsoleKey.Escape when key.Modifiers.HasFlag(ConsoleModifiers.Control):
-                _running = false; break;
-            case ConsoleKey.Escape:
-                ClearSelection(); break;
-            case ConsoleKey.RightArrow:
-            case ConsoleKey.PageDown:
-                if ((_page + 1) * PageSize < _totalFilteredCount) { _page++; ResetPage(); }
-                break;
-            case ConsoleKey.LeftArrow:
-            case ConsoleKey.PageUp:
-                if (_page > 0) { _page--; ResetPage(); }
-                break;
-            case ConsoleKey.Home:
-                _page = 0; ResetPage(); break;
-            case ConsoleKey.End:
-                _page = Math.Max(0, (_totalFilteredCount - 1) / PageSize); ResetPage(); break;
+            var key = Console.ReadKey(true);
+            switch (key.Key)
+            {
+                case ConsoleKey.UpArrow:
+                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift) && _cursorIndex > 0) SelectRange(_cursorIndex, _cursorIndex - 1);
+                    if (_cursorIndex > 0) _cursorIndex--;
+                    break;
+                case ConsoleKey.DownArrow:
+                    if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) SelectRange(_cursorIndex, _cursorIndex + 1);
+                    if (_cursorIndex < _sessions.Count - 1) _cursorIndex++;
+                    break;
+                case ConsoleKey.Spacebar: ToggleCurrentSelection(); break;
+                case ConsoleKey.A when key.Modifiers == 0: ToggleSelectAll(); break;
+                case ConsoleKey.Enter: ResumeSession(); break;
+                case ConsoleKey.P when key.Modifiers == 0: PreviewSession(); break;
+                case ConsoleKey.D when key.Modifiers == 0: DeleteSelectedSessions(); break;
+                case ConsoleKey.S when key.Modifiers == 0: ShowSearchDialog(); break;
+                case ConsoleKey.F when key.Modifiers == 0: ShowFilterDialog(); break;
+                case ConsoleKey.T when key.Modifiers == 0: ToggleSessionType(); break;
+                case ConsoleKey.R when key.Modifiers == 0: ToggleSortOrder(); break;
+                case ConsoleKey.B when key.Modifiers == 0: ShowBackupMenu(); break;
+                case ConsoleKey.V when key.Modifiers == 0: ShowVacuumDialog(); break;
+                case ConsoleKey.F1: ShowHelpDialog(); break;
+                case ConsoleKey.Escape when key.Modifiers.HasFlag(ConsoleModifiers.Control): _running = false; break;
+                case ConsoleKey.Escape: ClearSelection(); break;
+                case ConsoleKey.RightArrow:
+                case ConsoleKey.PageDown: if ((_page + 1) * PageSize < _totalFilteredCount) { _page++; ResetPage(); } break;
+                case ConsoleKey.LeftArrow:
+                case ConsoleKey.PageUp: if (_page > 0) { _page--; ResetPage(); } break;
+                case ConsoleKey.Home: _page = 0; ResetPage(); break;
+                case ConsoleKey.End: _page = Math.Max(0, (_totalFilteredCount - 1) / PageSize); ResetPage(); break;
+            }
         }
+        catch { _running = false; }
     }
 
-    private void ResetPage() { LoadData(); _cursorIndex = 0; }
-
-    // ══════════════════════════════════════════════
-    //  选中操作
-    // ══════════════════════════════════════════════
+    private void ResetPage() { LoadData(); _cursorIndex = 0; SetStatus($"第 {_page + 1} 页"); }
 
     private void ToggleCurrentSelection()
     {
@@ -304,31 +444,24 @@ public class TuiService
 
     private void ToggleSelectAll()
     {
-        if (_selectedIds.Count == _sessions.Count && _sessions.Count > 0)
-            _selectedIds.Clear();
-        else
-            foreach (var s in _sessions) _selectedIds.Add(s.Id);
+        if (_selectedIds.Count == _sessions.Count && _sessions.Count > 0) _selectedIds.Clear();
+        else foreach (var s in _sessions) _selectedIds.Add(s.Id);
     }
 
     private void SelectRange(int from, int to)
     {
-        int start = Math.Min(from, to), end = Math.Max(from, to);
-        for (int i = start; i <= end && i < _sessions.Count; i++)
-            _selectedIds.Add(_sessions[i].Id);
+        int s = Math.Min(from, to), e = Math.Max(from, to);
+        for (int i = s; i <= e && i < _sessions.Count; i++) _selectedIds.Add(_sessions[i].Id);
     }
 
-    private void ClearSelection() { _selectedIds.Clear(); }
-
-    // ══════════════════════════════════════════════
-    //  类型/排序切换
-    // ══════════════════════════════════════════════
+    private void ClearSelection() { _selectedIds.Clear(); SetStatus("已清除选中"); }
 
     private void ToggleSessionType()
     {
         _sessionType = _sessionType is null ? DefaultSessionType : null;
         _page = 0; _cursorIndex = 0; _selectedIds.Clear();
         LoadData();
-        SetStatus(_sessionType is null ? "显示: 全部类型" : $"显示: 仅 {_sessionType}");
+        SetStatus(_sessionType is null ? "显示: 全部类型" : $"仅 {_sessionType}");
     }
 
     private void ToggleSortOrder()
@@ -336,18 +469,14 @@ public class TuiService
         _sortAscending = !_sortAscending;
         _sessions.Reverse();
         BuildDateGroups();
-        SetStatus($"排序: 时间{(_sortAscending ? "↑ 升序" : "↓ 降序")}");
+        SetStatus($"排序: 时间{(_sortAscending ? "↑" : "↓")}");
     }
-
-    // ══════════════════════════════════════════════
-    //  状态栏
-    // ══════════════════════════════════════════════
 
     private void SetStatus(string msg) { _statusMessage = msg; _statusMessageTime = DateTime.Now; }
 
-    // ══════════════════════════════════════════════
-    //  运行/恢复会话
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
+    //  恢复会话
+    // ═════════════════════════════════════════════════
 
     private void ResumeSession()
     {
@@ -355,44 +484,40 @@ public class TuiService
         var s = _sessions[_cursorIndex];
 
         Console.Clear();
-        WriteLineColor($"🚀 正在启动会话...", ConsoleColor.Yellow);
+        Console.WriteLine($"🚀 正在启动会话...");
         Console.WriteLine($"  ID:    {s.Id}");
         Console.WriteLine($"  标题:  {s.Title}");
         Console.WriteLine($"  项目:  {s.ProjectPath}");
-        Console.WriteLine();
 
-        var projectDir = string.IsNullOrEmpty(s.ProjectPath) ? "." : s.ProjectPath;
-        if (!Directory.Exists(projectDir))
+        var dir = string.IsNullOrEmpty(s.ProjectPath) ? "." : s.ProjectPath;
+        if (!Directory.Exists(dir))
         {
-            WriteLineColor($"  项目目录不存在: {projectDir}", ConsoleColor.Red);
-            Console.WriteLine("  将使用当前目录启动");
-            projectDir = ".";
+            Console.WriteLine($"  目录不存在: {dir}，使用当前目录");
+            dir = ".";
         }
 
         try
         {
-            var psi = new System.Diagnostics.ProcessStartInfo
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "opencode",
                 Arguments = $"-s {s.Id}",
-                WorkingDirectory = projectDir,
+                WorkingDirectory = dir,
                 UseShellExecute = true,
-            };
-            System.Diagnostics.Process.Start(psi);
-            WriteLineColor($"  ✅ opencode -s {s.Id} 已启动", ConsoleColor.Green);
+            });
+            Console.WriteLine($"  ✅ opencode -s {s.Id} 已启动");
         }
         catch (Exception ex)
         {
-            WriteLineColor($"  启动失败: {ex.Message}", ConsoleColor.Red);
+            Console.WriteLine($"  启动失败: {ex.Message}");
             Console.WriteLine("  请确保 opencode 已安装并在 PATH 中");
         }
-
         PromptAnyKey();
     }
 
-    // ══════════════════════════════════════════════
-    //  预览会话
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
+    //  预览
+    // ═════════════════════════════════════════════════
 
     private void PreviewSession()
     {
@@ -401,21 +526,24 @@ public class TuiService
         var (ok, content) = _dbService.GetSessionPreview(s.Id);
 
         Console.Clear();
-        WriteLineColor($"━━━ 会话预览 — {s.Title} ━━━", ConsoleColor.Yellow);
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"━━━ 会话预览 — {s.Title} ━━━");
+        Console.ResetColor();
         Console.WriteLine();
         Console.WriteLine(ok ? content : $"[错误] {content}");
-        Console.WriteLine();
         PromptAnyKey();
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  搜索
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void ShowSearchDialog()
     {
         Console.Clear();
-        WriteLineColor("🔍 搜索会话", ConsoleColor.Yellow);
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("🔍 搜索会话");
+        Console.ResetColor();
         Console.WriteLine("输入关键词模糊匹配标题或项目路径（留空清除）");
         Console.Write("> ");
         Console.CursorVisible = true;
@@ -427,34 +555,34 @@ public class TuiService
         SetStatus(string.IsNullOrEmpty(_searchKeyword) ? "已清除搜索" : $"搜索: {_searchKeyword}");
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  筛选
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void ShowFilterDialog()
     {
         Console.Clear();
-        WriteLineColor("⏱ 筛选设置", ConsoleColor.Yellow);
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("⏱ 筛选设置");
+        Console.ResetColor();
 
-        WriteLineColor("\n[时间范围]", ConsoleColor.Cyan);
-        Console.WriteLine("  1. 全部");
-        Console.WriteLine("  2. 近 1 个月");
-        Console.WriteLine("  3. 近 6 个月");
+        Console.WriteLine("\n[时间范围]");
+        Console.WriteLine("  1. 全部    2. 近1月    3. 近6月");
         Console.Write("选择 (1-3): ");
-
-        var choice = Console.ReadKey(true).KeyChar;
-        _timeFilter = choice switch { '2' => "month", '3' => "half-year", _ => "all" };
+        var ch = Console.ReadKey(true).KeyChar;
+        _timeFilter = ch switch { '2' => "month", '3' => "half-year", _ => "all" };
         _config.TimeFilter = _timeFilter;
 
-        // 项目目录筛选
         if (_projectPaths.Count > 0)
         {
             Console.Clear();
-            WriteLineColor("\n[项目目录筛选]", ConsoleColor.Cyan);
-            Console.WriteLine("  0. (全部项目)");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine("[项目目录]");
+            Console.ResetColor();
+            Console.WriteLine("  0. (全部)");
             for (int i = 0; i < _projectPaths.Count && i < 20; i++)
             {
-                var d = _projectPaths[i].Length > 50 ? "..." + _projectPaths[i][^47..] : _projectPaths[i];
+                var d = _projectPaths[i].Length > 55 ? "..." + _projectPaths[i][^52..] : _projectPaths[i];
                 Console.WriteLine($"  {i + 1}. {d}");
             }
             if (_projectPaths.Count > 20) Console.WriteLine($"  ... 还有 {_projectPaths.Count - 20} 个");
@@ -462,137 +590,137 @@ public class TuiService
             var input = Console.ReadLine()?.Trim();
             if (int.TryParse(input, out int idx) && idx > 0 && idx <= _projectPaths.Count)
                 _projectFilter = _projectPaths[idx - 1];
-            else
-                _projectFilter = null;
+            else _projectFilter = null;
         }
 
-        // 会话类型筛选
         Console.Clear();
-        WriteLineColor("\n[会话类型]", ConsoleColor.Cyan);
-        Console.WriteLine("  0. 全部类型");
-        var typeOptions = _availableTypes.Count > 0 ? _availableTypes : new List<string> { "sisyphus", "explore" };
-        for (int i = 0; i < typeOptions.Count; i++)
-            Console.WriteLine($"  {i + 1}. 仅 {typeOptions[i]}");
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("[会话类型]");
+        Console.ResetColor();
+        var types = _availableTypes.Count > 0 ? _availableTypes : new List<string> { "sisyphus", "explore" };
+        Console.WriteLine("  0. 全部");
+        for (int i = 0; i < types.Count; i++)
+        {
+            var t = types[i].Length > 40 ? types[i][..37] + "..." : types[i];
+            Console.WriteLine($"  {i + 1}. {t}");
+        }
         Console.Write("选择 (0=全部): ");
         var tc = Console.ReadKey(true).KeyChar;
         var ti = tc - '1';
-        _sessionType = (ti >= 0 && ti < typeOptions.Count) ? typeOptions[ti] : null;
+        _sessionType = (ti >= 0 && ti < types.Count) ? types[ti] : null;
 
         _page = 0; _cursorIndex = 0; _selectedIds.Clear();
         LoadData();
-        SetStatus($"筛选完成");
+        SetStatus("筛选完成");
     }
 
-    // ══════════════════════════════════════════════
-    //  删除
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
+    //  删除（模态对话框）
+    // ═════════════════════════════════════════════════
 
     private void DeleteSelectedSessions()
     {
         if (_selectedIds.Count == 0) { SetStatus("没有选中的会话"); return; }
 
-        Console.Clear();
         var delList = _sessions.Where(s => _selectedIds.Contains(s.Id)).ToList();
 
-        WriteLineColor($"🗑️ 确认删除 — 共 {_selectedIds.Count} 条会话", ConsoleColor.Yellow);
-        Console.WriteLine(new string('─', 60));
-        foreach (var s in delList.Take(15))
+        var dlg = new Dialog
         {
-            var t = s.Title.Length > 40 ? s.Title[..37] + "..." : s.Title;
-            Console.WriteLine($"  {t,-42} {s.MessageCount}条");
-        }
-        if (delList.Count > 15) Console.WriteLine($"  ... 还有 {delList.Count - 15} 条");
-        Console.WriteLine(new string('─', 60));
+            Title = $"🗑️ 确认删除 — {_selectedIds.Count} 条",
+            Options = { ("Y", "确认删除"), ("N", "取消"), ("B", "备份后删除") }
+        };
+        foreach (var s in delList.Take(12))
+            dlg.Lines.Add($"  {(s.Title.Length > 48 ? s.Title[..45] + "..." : s.Title),-50} {s.MessageCount}条");
+        if (delList.Count > 12)
+            dlg.Lines.Add($"  ... 还有 {delList.Count - 12} 条");
+        dlg.Lines.Add($"  ⚠️ 不可撤销  |  自动备份: {(_config.AutoBackup ? "ON" : "OFF")}");
 
-        // 自动备份
-        if (_config.AutoBackup)
+        var result = ShowDialog(dlg);
+        if (result == "N" || result == "") { SetStatus("已取消"); return; }
+
+        bool doBackup = result == "B" || _config.AutoBackup;
+        if (doBackup)
         {
-            Console.Write("正在执行删除前自动备份...");
+            Console.Write("\n正在备份...");
             try
             {
                 var bp = _backupService.CreateBackup();
-                WriteLineColor($" 已完成: {Path.GetFileName(bp)}", ConsoleColor.Green);
+                Console.Write($" 完成: {Path.GetFileName(bp)}");
             }
             catch (Exception ex)
             {
-                WriteLineColor($" 备份失败: {ex.Message}", ConsoleColor.Red);
-                Console.Write("是否继续删除? (y/N): ");
+                Console.Write($" 备份失败: {ex.Message}");
+                Console.Write(" 继续删除? (y/N): ");
                 if (Console.ReadKey(true).Key != ConsoleKey.Y) { SetStatus("已取消"); return; }
             }
         }
-
-        Console.Write($"\n确认删除 {_selectedIds.Count} 条？此操作不可撤销！(y/N): ");
-        if (Console.ReadKey(true).Key != ConsoleKey.Y) { SetStatus("已取消"); return; }
 
         Console.WriteLine("\n正在删除...");
         try
         {
             var ids = _selectedIds.ToList();
             var cnt = _dbService.DeleteSessions(ids);
-            LogService.Info($"批量删除 {cnt} 条: {string.Join(", ", ids)}");
-            WriteLineColor($"成功删除 {cnt} 条", ConsoleColor.Green);
+            LogService.Info($"删除 {cnt} 条: {string.Join(", ", ids)}");
+            Console.WriteLine($"✅ 已删除 {cnt} 条");
 
             _selectedIds.Clear(); _page = 0; _cursorIndex = 0; LoadData();
 
-            Console.Write("\n是否执行 VACUUM 回收磁盘空间? (Y/n): ");
+            Console.Write("执行 VACUUM? (Y/n): ");
             if (Console.ReadKey(true).Key != ConsoleKey.N) ExecuteVacuum();
             else SetStatus($"已删除 {cnt} 条");
         }
         catch (Exception ex)
         {
-            WriteLineColor($"删除失败: {ex.Message}", ConsoleColor.Red);
-            SetStatus("删除操作失败");
+            Console.WriteLine($"❌ 删除失败: {ex.Message}");
+            SetStatus("删除失败");
         }
+        PromptAnyKey();
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  备份管理
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void ShowBackupMenu()
     {
         while (true)
         {
             Console.Clear();
-            WriteLineColor("💾 备份管理", ConsoleColor.Yellow);
-            Console.WriteLine("  1. 创建备份");
-            Console.WriteLine("  2. 查看历史备份");
-            Console.WriteLine("  3. 清理旧备份");
-            Console.WriteLine("  0. 返回");
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("💾 备份管理");
+            Console.ResetColor();
+            Console.WriteLine("  1. 创建备份  2. 查看历史  3. 清理旧备份  0. 返回");
             Console.Write("选择: ");
             var c = Console.ReadKey(true).KeyChar;
-            switch (c)
-            {
-                case '1': CreateBackupManually(); break;
-                case '2': ListBackups(); break;
-                case '3': CleanupBackups(); break;
-                case '0': return;
-            }
+            if (c == '1') { Console.Clear(); CreateBackupManually(); }
+            else if (c == '2') { Console.Clear(); ListBackups(); }
+            else if (c == '3') { Console.Clear(); CleanupBackups(); }
+            else if (c == '0') return;
         }
     }
 
     private void CreateBackupManually()
     {
-        Console.Clear();
-        Console.Write("正在创建全库备份...");
+        Console.Write("备份中...");
         try
         {
             var path = _backupService.CreateBackup();
-            WriteLineColor($" 完成: {path}", ConsoleColor.Green);
+            Console.WriteLine($" 完成: {path}");
             LogService.Info($"手动备份: {path}");
         }
-        catch (Exception ex) { WriteLineColor($" 失败: {ex.Message}", ConsoleColor.Red); }
+        catch (Exception ex) { Console.WriteLine($" 失败: {ex.Message}"); }
         PromptAnyKey();
     }
 
     private void ListBackups()
     {
-        Console.Clear();
         var list = _backupService.ListBackups();
-        if (list.Count == 0) { WriteLineColor("暂无备份文件", ConsoleColor.Yellow); }
+        if (list.Count == 0) Console.WriteLine("暂无备份文件");
         else
         {
-            WriteLineColor($"📋 备份列表 ({list.Count} 个)", ConsoleColor.Yellow);
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"📋 备份列表 ({list.Count} 个)");
+            Console.ResetColor();
             Console.WriteLine(new string('─', 80));
             int i = 1;
             foreach (var b in list.Take(30))
@@ -607,20 +735,19 @@ public class TuiService
 
     private void CleanupBackups()
     {
-        Console.Clear();
-        Console.Write("保留最近几天的备份? (默认 30): ");
+        Console.Write("保留天数 (默认 30): ");
         Console.CursorVisible = true;
         var input = Console.ReadLine()?.Trim();
         Console.CursorVisible = false;
         int days = int.TryParse(input, out var d) && d > 0 ? d : 30;
         var cnt = _backupService.CleanupOldBackups(days);
-        WriteLineColor($"已清理 {cnt} 个旧备份文件", ConsoleColor.Green);
+        Console.WriteLine($"已清理 {cnt} 个旧备份");
         PromptAnyKey();
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  VACUUM
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void ShowVacuumDialog()
     {
@@ -631,136 +758,109 @@ public class TuiService
 
     private void ExecuteVacuum()
     {
-        Console.WriteLine("正在执行数据库收缩 (VACUUM)...");
-        AnimateSpinner(() =>
+        Console.Write("正在执行 VACUUM...");
+        var (ok, before, after, err) = _dbService.Vacuum();
+        if (ok)
         {
-            var (ok, before, after, err) = _dbService.Vacuum();
-            if (ok)
-            {
-                var saved = before - after;
-                var pct = before > 0 ? (saved * 100.0 / before) : 0;
-                WriteLineColor($"\nVACUUM 完成", ConsoleColor.Green);
-                Console.WriteLine($"  压缩前: {FormatBytes(before)}");
-                Console.WriteLine($"  压缩后: {FormatBytes(after)}");
-                Console.WriteLine($"  节省:   {FormatBytes(saved)} ({pct:F1}%)");
-                LogService.Info($"VACUUM: {FormatBytes(before)} → {FormatBytes(after)}");
-            }
-            else
-            {
-                WriteLineColor($"\nVACUUM 失败: {err}", ConsoleColor.Red);
-            }
-        });
+            var saved = before - after;
+            var pct = before > 0 ? (saved * 100.0 / before) : 0;
+            Console.WriteLine($" 完成");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"  压缩前: {FormatBytes(before)}");
+            Console.WriteLine($"  压缩后: {FormatBytes(after)}");
+            Console.WriteLine($"  节省:   {FormatBytes(saved)} ({pct:F1}%)");
+            Console.ResetColor();
+            LogService.Info($"VACUUM: {FormatBytes(before)} → {FormatBytes(after)}");
+        }
+        else
+        {
+            Console.WriteLine($" 失败: {err}");
+        }
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  帮助
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
 
     private void ShowHelpDialog()
     {
         Console.Clear();
-        WriteLineColor("📖 帮助", ConsoleColor.Yellow);
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("📖 帮助");
+        Console.ResetColor();
         Console.WriteLine(new string('─', 60));
-        Console.WriteLine(@"[键盘快捷键]
-  ↑/↓        移动光标
-  Space      切换当前行选中
-  A          全选/取消全选
-  Shift+↑/↓  区间选中
-  Enter      恢复/运行会话（调用 opencode）
-  P          预览会话内容
-  D          删除选中
-  S          搜索
-  F          筛选(时间/项目/类型)
-  T          切换类型(全部↔主对话)
-  R          切换排序
-  B          备份管理
-  V          数据库收缩
-  Esc        清除选中
-  ←/→        翻页
-  Home/End   首页/末页
-  F1         帮助
-  Q/Esc      退出
+        Console.WriteLine(@"
+ [导航]
+   ↑/↓          移动光标
+   ←/→          翻页
+   Home/End      首页/末页
 
-[会话类型]
-  ● 主对话(sisyphus) — 可恢复
-  ○ 其他(explore等) — 默认隐藏，按T切换
+ [选择]
+   Space         切换选中
+   A             全选/取消
+   Shift+↑/↓     区间选中
+   Esc           清除选中
 
-[命令行参数]
-  --version             显示版本
-  --help                显示帮助
-  --backup-only         仅备份后退出
-  --purge-before 日期   删除指定日期前会话
-  --vacuum              仅库收缩
-  --db 路径             自定义数据库路径
-  --no-auto-backup      关闭自动备份");
+ [操作]
+   Enter         恢复会话 (opencode -s <id>)
+   P             预览会话内容
+   D             删除选中
+
+ [筛选]
+   S             搜索
+   F             筛选(时间/项目/类型)
+   T             切换类型(全部↔主对话)
+   R             排序(时间↑↓)
+
+ [管理]
+   B             备份管理
+   V             数据库收缩 (VACUUM)
+
+ [系统]
+   F1            帮助
+   Q/Ctrl+Esc    退出
+
+ [会话类型]
+   ● 主对话(sisyphus)  ○ 其他(explore等)
+   默认仅显示主对话，按T切换
+
+ [命令行]
+   --help       查看全部命令行参数");
         Console.WriteLine(new string('─', 60));
         PromptAnyKey();
     }
 
-    // ══════════════════════════════════════════════
+    // ═════════════════════════════════════════════════
     //  工具方法
-    // ══════════════════════════════════════════════
-
-    private static void WriteColor(string text, ConsoleColor fg, ConsoleColor? bg = null)
-    {
-        Console.ForegroundColor = fg;
-        if (bg.HasValue) Console.BackgroundColor = bg.Value;
-        Console.Write(text);
-        Console.ResetColor();
-    }
-
-    private static void WriteLineColor(string text, ConsoleColor fg)
-    {
-        Console.ForegroundColor = fg;
-        Console.WriteLine(text);
-        Console.ResetColor();
-    }
-
-    private static void WriteError(string msg)
-    {
-        WriteLineColor($"错误: {msg}", ConsoleColor.Red);
-    }
+    // ═════════════════════════════════════════════════
 
     private static void PromptAnyKey()
     {
-        WriteLineColor("\n按任意键返回...", ConsoleColor.DarkGray);
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine("\n按任意键返回...");
+        Console.ResetColor();
         Console.ReadKey(true);
-    }
-
-    private static void AnimateSpinner(Action action)
-    {
-        var frames = new[] { '|', '/', '-', '\\' };
-        int i = 0;
-        var task = Task.Run(action);
-        while (!task.IsCompleted)
-        {
-            Console.Write($"\r  正在执行... {frames[i % 4]}");
-            i++;
-            Thread.Sleep(100);
-        }
-        Console.Write("\r" + new string(' ', Console.WindowWidth) + "\r");
-        task.Wait();
     }
 
     private static void ShowLoading(string message, Action action)
     {
         Console.Clear();
         var frames = new[] { '|', '/', '-', '\\' };
-        int i = 0;
-        var task = Task.Run(action);
+        var done = false;
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        while (!task.IsCompleted)
+        var spinner = Task.Run(() =>
         {
-            Console.Write($"\r {message} {frames[i % 4]}  ({sw.Elapsed.TotalSeconds:F1}s)");
-            i++;
-            Thread.Sleep(100);
-        }
+            int i = 0;
+            while (!done) { Console.Write($"\r {message} {frames[i % 4]}  ({sw.Elapsed.TotalSeconds:F1}s)"); Thread.Sleep(100); i++; }
+        });
+        action();
+        done = true;
+        try { spinner.Wait(500); } catch { }
         Console.WriteLine($"\r {message} 完成! ({sw.Elapsed.TotalSeconds:F1}s)" + new string(' ', 10));
-        Thread.Sleep(300);
-        task.Wait();
+        Thread.Sleep(200);
     }
 
-    private static string FormatBytes(long bytes) => bytes switch
+    internal static string FormatBytes(long bytes) => bytes switch
     {
         < 1024 => $"{bytes} B",
         < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",

@@ -12,8 +12,8 @@ public class Session
     /// <summary>项目路径</summary>
     public string ProjectPath { get; set; } = string.Empty;
 
-    /// <summary>会话类型 (sisyphus / explore / etc.)</summary>
-    public string Type { get; set; } = string.Empty;
+    /// <summary>Agent 类型 (Sisyphus / explore / general 等)</summary>
+    public string Agent { get; set; } = string.Empty;
 
     /// <summary>最后更新时间</summary>
     public DateTime LastUpdatedAt { get; set; }
@@ -35,20 +35,22 @@ public class Session
     /// <summary>最后更新时间的友好显示</summary>
     public string FormattedTime => LastUpdatedAt.ToString("yyyy-MM-dd HH:mm");
 
-    /// <summary>日期分组标签</summary>
+    /// <summary>日期分组标签（纯中文）</summary>
     public string DateGroup => GetDateGroup(LastUpdatedAt);
 
-    /// <summary>判断是否为可恢复的主对话类型</summary>
-    public bool IsMainSession => Type is "sisyphus" or "" or null;
+    /// <summary>是否为 sisyphus 系列主对话</summary>
+    public bool IsMainSession =>
+        string.IsNullOrEmpty(Agent) ||
+        Agent.Contains("sisyphus", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>根据日期计算分组标签</summary>
     public static string GetDateGroup(DateTime dt)
     {
         var today = DateTime.Today;
-        if (dt.Date == today) return "今天 Today";
-        if (dt.Date == today.AddDays(-1)) return "昨天 Yesterday";
-        if (dt.Date >= today.AddDays(-7)) return "本周 This Week";
-        if (dt.Date >= today.AddDays(-30)) return "本月 This Month";
+        if (dt.Date == today) return "今天";
+        if (dt.Date == today.AddDays(-1)) return "昨天";
+        if (dt.Date >= today.AddDays(-7)) return "本周";
+        if (dt.Date >= today.AddDays(-30)) return "本月";
         if (dt.Year == today.Year) return dt.ToString("M月");
         return dt.ToString("yyyy年M月");
     }

@@ -16,9 +16,7 @@ public static partial class Program
 
     public static async Task<int> Main(string[] args)
     {
-        Console.Title = $"{AppName} v{AppVersion}";
-
-        ShowStartupInfo();
+        try { Console.Title = $"{AppName} v{AppVersion}"; } catch { }
 
         // ── 命令行参数定义 ──
         var dbOption = new Option<string>("--db", "指定 OpenCode SQLite 数据库文件路径");
@@ -40,6 +38,7 @@ public static partial class Program
             {
                 if (!backupOnly && string.IsNullOrEmpty(purgeBefore) && !vacuum)
                 {
+                    ShowStartupInfo();
                     RunTui(dbPath, noAutoBackup);
                     return;
                 }
@@ -52,19 +51,26 @@ public static partial class Program
 
     private static void ShowStartupInfo()
     {
-        Console.Clear();
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"  {AppName}");
-        Console.ResetColor();
-        Console.WriteLine($"  版本 {AppVersion}");
-        Console.WriteLine($"  {GitHubUrl}");
-        Console.WriteLine($"  {Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyDescriptionAttribute>()?.Description}");
-        Console.WriteLine();
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine("  提示: 使用 --help 查看所有命令行选项");
-        Console.WriteLine("  直接启动: 进入交互式 TUI 管理模式");
-        Console.ResetColor();
-        Console.WriteLine(new string('─', 60));
-        Console.WriteLine();
+        try
+        {
+            Console.Clear();
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"  {AppName}");
+            Console.ResetColor();
+            Console.WriteLine($"  版本 {AppVersion}");
+            Console.WriteLine($"  {GitHubUrl}");
+            Console.WriteLine($"  {Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyDescriptionAttribute>()?.Description}");
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("  提示: 使用 --help 查看所有命令行选项");
+            Console.WriteLine("  直接启动: 进入交互式 TUI 管理模式");
+            Console.ResetColor();
+            Console.WriteLine(new string('─', 60));
+            Console.WriteLine();
+        }
+        catch
+        {
+            // 输出重定向时跳过清屏和彩色输出
+        }
     }
 }

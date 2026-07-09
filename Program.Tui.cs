@@ -11,10 +11,10 @@ public static partial class Program
     /// <summary>进入交互式 TUI 模式</summary>
     private static void RunTui(string dbPath, bool noAutoBackup)
     {
-        var config = LoadConfig(dbPath, noAutoBackup);
         using var dbService = new DatabaseService(dbPath);
+        var config = LoadConfig(dbPath, noAutoBackup);
 
-        if (!ValidateAndOpen(dbService)) return;
+        if (!TryOpenDatabase(dbService)) return;
 
         var backupService = new BackupService(dbPath, config.BackupDirectory);
         config.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ConfigFileName));
@@ -26,10 +26,10 @@ public static partial class Program
     /// <summary>执行命令行操作后退出</summary>
     private static void RunCli(string dbPath, bool backupOnly, string? purgeBefore, bool vacuum, bool noAutoBackup)
     {
-        var config = LoadConfig(dbPath, noAutoBackup);
         using var dbService = new DatabaseService(dbPath);
+        var config = LoadConfig(dbPath, noAutoBackup);
 
-        if (!ValidateAndOpen(dbService)) return;
+        if (!TryOpenDatabase(dbService)) return;
 
         var backupService = new BackupService(dbPath, config.BackupDirectory);
 
@@ -59,10 +59,10 @@ public static partial class Program
                 var saved = beforeSize - afterSize;
                 var savedPercent = beforeSize > 0 ? (saved * 100.0 / beforeSize) : 0;
                 Console.WriteLine($"VACUUM 完成:");
-                Console.WriteLine($"  压缩前: {FormatBytes(beforeSize)}");
-                Console.WriteLine($"  压缩后: {FormatBytes(afterSize)}");
-                Console.WriteLine($"  节省:   {FormatBytes(saved)} ({savedPercent:F1}%)");
-                LogService.Info($"命令行 VACUUM: {FormatBytes(beforeSize)} → {FormatBytes(afterSize)}");
+                Console.WriteLine($"  压缩前: {TuiService.FormatBytes(beforeSize)}");
+                Console.WriteLine($"  压缩后: {TuiService.FormatBytes(afterSize)}");
+                Console.WriteLine($"  节省:   {TuiService.FormatBytes(saved)} ({savedPercent:F1}%)");
+                LogService.Info($"命令行 VACUUM: {TuiService.FormatBytes(beforeSize)} → {TuiService.FormatBytes(afterSize)}");
             }
             else
             {
@@ -123,35 +123,20 @@ public static partial class Program
         return config;
     }
 
-    /// <summary>校验并打开数据库，失败返回 false</summary>
-    private static bool ValidateAndOpen(DatabaseService dbService)
+    /// <summary>校验并打开数据库，成功返回 true</summary>
+    private static bool TryOpenDatabase(DatabaseService dbService)
     {
         var (valid, errorMsg) = dbService.ValidateDatabase();
         if (!valid)
         {
             Console.Error.WriteLine($"错误: {errorMsg}");
-            Environment.Exit(1);
             return false;
         }
-
         if (!dbService.Open())
         {
             Console.Error.WriteLine("错误: 无法打开数据库连接");
-            Environment.Exit(1);
             return false;
         }
-
         return true;
-    }
-
-    /// <summary>格式化字节数</summary>
-    private static string FormatBytes(long bytes)
-    {
-        return bytes switch
-        {
-            < 1024 => $"{bytes} B",
-            < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
-            _ => $"{bytes / (1024.0 * 1024.0):F1} MB"
-        };
     }
 }
